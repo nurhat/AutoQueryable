@@ -101,9 +101,11 @@ namespace AutoQueryable.Helpers
 
             ParameterExpression parameter = Expression.Parameter(typeof(TEntity), "p");
 
-            MemberInitExpression memberInit = InitType<TEntity>(columns, parameter);
-            return Expression.Lambda<Func<TEntity, object>>(memberInit, parameter);
-
+            Expression memberInit = InitType<TEntity>(columns, parameter);
+          
+            var expression = Expression.Lambda<Func<TEntity, object>>(memberInit, parameter);
+          
+            return expression;
         }
 
         private static Expression GetMemberExpression<TEntity>(Expression parent, SelectColumn column, bool isLambdaBody = false)
@@ -116,7 +118,36 @@ namespace AutoQueryable.Helpers
                 {
                     return null;
                 }
-                return Expression.PropertyOrField(parent, column.Name);
+                var memberNames = column.Key.Split('.');
+                var membersLength = (parent is ParameterExpression) ? 1 : memberNames.Length;
+                var members = new Expression[membersLength];
+                Expression parentExpression = parent;
+                var proceeded = membersLength - 1;
+                for (int i = memberNames.Length - 1; i >= 0; i--)
+                {
+                    members[proceeded] = Expression.PropertyOrField(parentExpression, memberNames[i]);
+                    if (parentExpression is MemberExpression)
+                    {
+                        parentExpression = (parentExpression as MemberExpression).Expression;
+                    }
+                    if (proceeded == 0)
+                    {
+                        break;
+                    }
+                    proceeded--;
+                }
+                Expression result = members[members.Length - 1];
+                // For non nullable value types, promote the result into the corresponding nullable type
+                if (result.Type.GetTypeInfo().IsValueType && Nullable.GetUnderlyingType(result.Type) == null)
+                    result = Expression.Convert(result, typeof(Nullable<>).MakeGenericType(result.Type));
+                var nullResult = Expression.Constant(null, result.Type);
+                for (int i = members.Length - 2; i >= 0; i--)
+                {
+                    result = Expression.Condition(
+                        Expression.NotEqual(members[i], Expression.Constant(null)),
+                        result, nullResult);
+                }
+                return result;
             }
 
             Expression nextParent = parent;
@@ -165,7 +196,7 @@ namespace AutoQueryable.Helpers
             {
                 var parentType = entityType;
                 int? maxDepth = profile?.MaxDepth;
-                
+
                 for (int i = 0; i < selectionColumnPath.Length; i++)
                 {
                     if (maxDepth.HasValue && i >= maxDepth.Value)
@@ -178,8 +209,9 @@ namespace AutoQueryable.Helpers
                     var property = parentType.GetProperties().FirstOrDefault(x => x.Name.ToLowerInvariant() == columnName.ToLowerInvariant());
                     if (property == null)
                     {
-                        if (key.EndsWith(".*") && (!maxDepth.HasValue || (i < maxDepth - 1))) {
-                            var inclusionColumn= allSelectColumns.FirstOrDefault(all => all.Key == key.Replace(".*",""));
+                        if (key.EndsWith(".*") && (!maxDepth.HasValue || (i < maxDepth - 1)))
+                        {
+                            var inclusionColumn = allSelectColumns.FirstOrDefault(all => all.Key == key.Replace(".*", ""));
                             inclusionColumn.InclusionType = SelectInclusingType.IncludeAllProperties;
                         }
                         break;
@@ -302,7 +334,7 @@ namespace AutoQueryable.Helpers
             if (isCollection)
             {
                 type = entityType.GetGenericArguments().FirstOrDefault();
-            } 
+            }
             // Get all properties without navigation properties.
             if (selectInclusingType == SelectInclusingType.IncludeBaseProperties)
             {
@@ -327,13 +359,13 @@ namespace AutoQueryable.Helpers
             {
                 columns = columns?.Where(c => profile.SelectableProperties.Contains(c, StringComparer.OrdinalIgnoreCase));
             }
-            
+
             // Remove unselectable properties.
             if (profile?.UnselectableProperties != null)
             {
                 columns = columns?.Where(c => !profile.UnselectableProperties.Contains(c, StringComparer.OrdinalIgnoreCase));
             }
-            
+
             return columns?.ToList();
         }
 
@@ -345,15 +377,19 @@ namespace AutoQueryable.Helpers
                 {
                     return (x.Value as MemberExpression).Member as object;
                 }
-                if (x.Value is MemberInitExpression)
-                {
-                    return x.Value.Type;
-                }
-                if (x.Value is MethodCallExpression)
-                {
-                    return x.Value.Type;
-                }
-                return null;
+                /*  else if (x.Value is MemberInitExpression)
+                  {
+                      return x.Value.Type;
+                  }
+                  else if (x.Value is MethodCallExpression)
+                  {
+                      return x.Value.Type;
+                  }
+                  else if (x.Value is ConditionalExpression)
+                  {
+                      return x.Value.Type;
+                  }*/
+                return x.Value.Type;
             });
         }
 
